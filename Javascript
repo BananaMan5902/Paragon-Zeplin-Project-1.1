@@ -1,0 +1,266 @@
+
+const CLIENT_ID = "PASTE_YOUR_GOOGLE_OAUTH_CLIENT_ID_HERE";
+
+const API = "https://slides.googleapis.com/v1/presentations";
+const SCOPE = "https://www.googleapis.com/auth/presentations";
+
+const $ = (id) => document.getElementById(id);
+
+let accessToken = "";
+let tokenClient = null;
+let currentPresentation = null;
+let busy = false;
+
+function message(text, error = false) {
+  $("message").textContent = text;
+  $("message").style.color = error ? "#ff8278" : "#a9efb6";
+}
+
+function getPresentationId() {
+  const value = $("slidesUrl").value.trim();
+  const match = value.match(/\/presentation\/d\/([a-zA-Z0-9_-]+)/);
+
+  if (match) return match[1];
+
+  if (/^[a-zA-Z0-9_-]{20,}$/.test(value)) return value;
+
+  throw new Error("Paste a valid Google Slides presentation link.");
+}
+
+async function apiRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...options.headers
+    }
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      result.error?.message || `Google API error ${response.status}`
+    );
+  }
+
+  return result;
+}
+
+function connectGoogle() {
+  if (!CLIENT_ID ||
+      CLIENT_ID === "PASTE_YOUR_GOOGLE_OAUTH_CLIENT_ID_HERE") {
+    message("First add your Google OAuth client ID to script.js.", true);
+    return;
+  }
+
+  if (!window.google?.accounts?.oauth2) {
+    message("Google sign-in is still loading. Refresh and try again.", true);
+    return;
+  }
+
+  if (!tokenClient) {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPE,
+      callback: (response) => {
+        if (response.error || !response.access_token) {
+          message("Google authorization failed. Please try again.", true);
+          return;
+        }
+
+        accessToken = response.access_token;
+        $("accountStatus").textContent = "Connected to Google";
+        $("previewBtn").disabled = false;
+        message("Connected! Now load your presentation.");
+      },
+      error_callback: (error) => {
+        message(error.message || "Google sign-in failed.", true);
+      }
+    });
+  }
+
+  tokenClient.requestAccessToken();
+}
+
+async function previewPresentation() {
+  try {
+    if (!accessToken) throw new Error("Connect your Google account first.");
+
+    currentPresentation = null;
+    $("bombBtn").disabled = true;
+    message("Loading your presentation...");
+
+    const id = getPresentationId();
+    const fields = [
+      "presentationId",
+      "title",
+      "pageSize",
+      "slides(objectId,pageElements(objectId))"
+    ].join(",");
+
+    const url = `${API}/${encodeURIComponent(id)}?fields=${
+      encodeURIComponent(fields)
+    }`;
+
+    const data = await apiRequest(url);
+
+    if (!data.slides?.length) {
+      throw new Error("No slides were found in this presentation.");
+    }
+
+    currentPresentation = data;
+
+    $("preview").textContent =
+      `Title: ${data.title}\n` +
+      `Number of slides: ${data.slides.length}\n\n` +
+      "Presentation loaded successfully.";
+
+    $("bombBtn").disabled = false;
+    message("Ready! Check your settings before making changes.");
+  } catch (error) {
+    currentPresentation = null;
+    $("preview").textContent = "Unable to load the presentation.";
+    message(error.message, true);
+  }
+}
+
+async function bombPresentation() {
+  if (busy) return;
+
+  if (!accessToken || !currentPresentation) {
+    message("Connect Google and load your presentation first.", true);
+    return;
+  }
+
+  const presentation = currentPresentation;
+  const selectedSlides = $("scope").value === "first"
+    ? presentation.slides.slice(0, 1)
+    : presentation.slides;
+
+  const emoji = $("emoji").value;
+
+  if (!confirm(
+    `BOMBER ZEPPELIN\n\n` +
+    `Presentation: ${presentation.title}\n` +
+    `Slides selected: ${selectedSlides.length}\n\n` +
+    `Existing page elements on these slides will be removed ` +
+    `and replaced with ${emoji}.\n\n` +
+    `Have you made a backup? Continue?`
+  )) return;
+
+  busy = true;
+  $("bombBtn").disabled = true;
+
+  try {
+    const requests = [];
+    const width = presentation.pageSize?.width?.magnitude ?? 9144000;
+    const height = presentation.pageSize?.height?.magnitude ?? 5143500;
+    const boxWidth = Math.min(width * 0.8, 400 * 12700);
+    const boxHeight = Math.min(height * 0.5, 120 * 12700);
+
+    selectedSlides.forEach((slide, index) => {
+      for (const element of slide.pageElements || []) {
+        requests.push({
+          deleteObject: { objectId: element.objectId }
+        });
+      }
+
+      // Object IDs must be unique within this presentation.
+      const shapeId =
+        `bz_${Date.now().toString(36)}_${index}`;
+
+      requests.push({
+        createShape: {
+          objectId: shapeId,
+          shapeType: "TEXT_BOX",
+          elementProperties: {
+            pageObjectId: slide.objectId,
+            size: {
+              width: { magnitude: boxWidth, unit: "EMU" },
+              height: { magnitude: boxHeight, unit: "EMU" }
+            },
+            transform: {
+              scaleX: 1,
+              scaleY: 1,
+              translateX: (width - boxWidth) / 2,
+              translateY: (height - boxHeight) / 2,
+              unit: "EMU"
+            }
+          }
+        }
+      });
+
+      requests.push({
+        insertText: {
+          objectId: shapeId,
+          text: emoji
+        }
+      });
+
+      requests.push({
+        updateTextStyle: {
+          objectId: shapeId,
+          style: {
+            fontSize: { magnitude: 50, unit: "PT" }
+          },
+          textRange: { type: "ALL" },
+          fields: "fontSize"
+        }
+      });
+
+      requests.push({
+        updateParagraphStyle: {
+          objectId: shapeId,
+          style: { alignment: "CENTER" },
+          textRange: { type: "ALL" },
+          fields: "alignment"
+        }
+      });
+
+      requests.push({
+        updateShapeProperties: {
+          objectId: shapeId,
+          shapeProperties: {
+            shapeBackgroundFill: { propertyState: "NOT_RENDERED" },
+            outline: { propertyState: "NOT_RENDERED" }
+          },
+          fields: "shapeBackgroundFill,outline"
+        }
+      });
+    });
+
+    const endpoint =
+      `${API}/${encodeURIComponent(presentation.presentationId)}:batchUpdate`;
+
+    // Send small batches. Google validates each batch before applying it.
+    // A later batch can fail even if an earlier batch succeeded.
+    for (let i = 0; i < requests.length; i += 100) {
+      message(`Applying changes: ${Math.min(i + 100, requests.length)} of ${requests.length} operations...`);
+
+      await apiRequest(endpoint, {
+        method: "POST",
+        body: JSON.stringify({
+          requests: requests.slice(i, i + 100)
+        })
+      });
+    }
+
+    message(`💥 Finished! Updated ${selectedSlides.length} slide(s).`);
+    await previewPresentation();
+  } catch (error) {
+    message(
+      `Could not complete all changes: ${error.message}. ` +
+      "Check the presentation before trying again.",
+      true
+    );
+  } finally {
+    busy = false;
+    $("bombBtn").disabled = !currentPresentation?.slides?.length;
+  }
+}
+
+$("connectBtn").addEventListener("click", connectGoogle);
+$("previewBtn").addEventListener("click", previewPresentation);
+$("bombBtn").addEventListener("click", bombPresentation);
