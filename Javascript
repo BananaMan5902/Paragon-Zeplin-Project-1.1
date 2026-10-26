@@ -261,6 +261,22 @@ async function bombPresentation() {
   }
 }
 
-$("connectBtn").addEventListener("click", connectGoogle);
+
+$("connectBtn").addEventListener("click", () => {
+  message("Connect button clicked! Checking Google sign-in...");
+
+  try {
+    connectGoogle();
+  } catch (error) {
+    message("Connection error: " + error.message, true);
+  }
+});
+
 $("previewBtn").addEventListener("click", previewPresentation);
 $("bombBtn").addEventListener("click", bombPresentation);
+
+// Confirm that the JavaScript file has loaded.
+message("Bomber Zeppelin loaded. Ready to connect.");
+
+$("previewBtn").disabled = true;
+$("bombBtn").disabled = true;
